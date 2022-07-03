@@ -168,7 +168,15 @@ For older environments without fetch support, you should get a
 
 ## Node.js
 
-Works with any [FormData](https://github.com/form-data/form-data) or
+Wretch is compatible with and tested in _Node >= 14_. Older versions of node may work
+but is not guaranteed.
+
+:partying_face: Starting from node 18, [node includes experimental fetch
+support](https://nodejs.org/en/blog/announcements/v18-release-announce/). Wretch will
+work without installing any polyfill.
+
+For older versions of node, Wretch requires installing
+[FormData](https://github.com/form-data/form-data) and
 [fetch](https://www.npmjs.com/package/node-fetch) polyfills.
 
 ```javascript
@@ -1074,7 +1082,7 @@ wretch("...")
 For node.js, there is a little extra work to do :
 
 ```js
-// Node.js 8.5+ only
+// Node.js only
 const { performance, PerformanceObserver } = require("perf_hooks");
 
 wretch().polyfills({
