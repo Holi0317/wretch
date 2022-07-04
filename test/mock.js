@@ -1,34 +1,59 @@
+// @ts-check
 const fs = require("fs")
 const path = require("path")
-const restify = require("restify")
-const corsMiddleware = require("restify-cors-middleware2")
+const { promisify } = require("util")
+const { values } = require("lodash")
+const qs = require("querystring")
+const Fastify = require("fastify")
+const multipartPlugin = require("@fastify/multipart")
+const formBodyPlugin = require("@fastify/formbody")
+const authPlugin = require("@fastify/basic-auth")
+const corsPlugin = require("@fastify/cors")
 
-const cors = corsMiddleware({
-    origins: ["*"],
-    allowHeaders: ["Authorization", "X-Custom-Header", "X-Custom-Header-2", "X-Custom-Header-3", "X-Custom-Header-4"],
-    exposeHeaders: ["Allow", "Timing-Allow-Origin"]
-})
+const delay = promisify(setTimeout)
 
 const preload = {
     duck: fs.readFileSync(path.resolve(__dirname, "assets", "duck.jpg"))
 }
 
-const mockServer = {
-    launch: port => {
-        const server = restify.createServer()
-        mockServer["server"] = server
+async function validate(username, password, req, reply) {
+    if (username !== 'wretch' || password !== 'rocks') {
+        return new Error('Winter is coming')
+    }
+}
 
-        server.use(restify.plugins.queryParser())
-        server.use(restify.plugins.jsonBodyParser())
-        server.use(restify.plugins.multipartBodyParser({
-            mapFiles: true
-        }))
-        server.use(restify.plugins.authorizationParser())
-        server.pre(cors.preflight)
-        server.use(cors.actual)
-        server.pre(function(req, res, next) {
-            res.setHeader("Timing-Allow-Origin", '*')
-            return next()
+const mockServer = {
+    /** @type {Fastify.FastifyInstance | null} */
+    server: null,
+    /** 
+      * @param {number} port
+      */
+    launch: port => {
+        const server = Fastify.default()
+        mockServer.server = server
+
+        server.register(multipartPlugin.default, { attachFieldsToBody: true })
+        server.register(formBodyPlugin.default)
+        server.register(authPlugin.default, { validate })
+        server.addContentTypeParser('*', async function () {})
+
+        server.register(corsPlugin.default, {
+            allowedHeaders: ["Authorization", "X-Custom-Header", "X-Custom-Header-2", "X-Custom-Header-3", "X-Custom-Header-4"],
+            exposedHeaders: ["Allow", "Timing-Allow-Origin"],
+            strictPreflight: false,
+            preflightContinue: true
+        })
+
+        server.addHook("preHandler", async (request, reply) => {
+            reply.header("Timing-Allow-Origin", '*')
+        })
+
+        // Must define HEAD /json before setupReplies. Otherwise fastify will be unhappy
+        server.head("/json", async (request, reply) => {
+            reply.type("application/json")
+            reply.header("allow", "GET,POST,PUT,PATCH,DELETE")
+            reply.send()
+            return reply
         })
 
         setupReplies(server, "text", textReply)
@@ -36,148 +61,182 @@ const mockServer = {
         setupReplies(server, "blob", imgReply)
         setupReplies(server, "arrayBuffer", binaryReply)
 
-        server.head("/json", (req, res) => {
-            res.setHeader("content-type", "application/json")
-            res.end()
+        server.get("/json/null", async (request, reply) => {
+            reply.type("application/json")
+            return null;
         })
 
-        server.get("/json/null", (req,res) => {
-            res.json(null)
+        server.options("/options", async (request, reply) => {
+            reply.header("Allow", "OPTIONS")
+            reply.send()
+            return reply
         })
 
-        server.opts("/options", (req, res) => {
-            res.header("Allow", "OPTIONS")
-            res.end()
-        })
+        server.get("/customHeaders", async (request, reply) => {
+            const headerKeys = ["x-custom-header", "x-custom-header-2", "x-custom-header-3", "x-custom-header-4"]
+            const hasCustomHeaders = headerKeys.every(key => key in request.headers)
+            reply.code(hasCustomHeaders ? 200 : 400)
+            reply.send("")
 
-        server.get("/customHeaders", (req, res) => {
-            const hasCustomHeaders = req.header("X-Custom-Header", false)
-                && req.header("X-Custom-Header-2", false)
-                && req.header("X-Custom-Header-3", false)
-                && req.header("X-Custom-Header-4", false)
-            res.send(hasCustomHeaders ? 200 : 400)
+            return reply
         })
 
         setupErrors(server)
 
-        server.post("/text/roundTrip", (req,res) => {
-            try {
-                if(req.header("content-type") === "text/plain")
-                    res.sendRaw(req.body)
-                else
-                    res.send(400)
-            } catch(error) {
-                console.error(error)
-                res.send(400)
+        server.post("/text/roundTrip", async (request, reply) => {
+            if(request.headers["content-type"] === "text/plain") {
+                return request.body
             }
+
+            reply.code(400)
+            reply.send()
+            await reply
         })
 
-        server.post("/json/roundTrip", (req, res) => {
-            try {
-                if(req.header("content-type") === "application/json")
-                    res.json(req.body)
-                else
-                    res.send(400)
-            } catch(error) {
-                console.error(error)
-                res.send(400)
+        server.post("/json/roundTrip", async (request, reply) => {
+            if (request.headers["content-type"] === "application/json") {
+                return request.body
             }
+
+            reply.code(400)
+            reply.send()
+            return reply
         })
 
-        server.post("/urlencoded/roundTrip", (req, res) => {
-            try {
-                if(req.header("content-type") === "application/x-www-form-urlencoded")
-                    res.sendRaw(req.body)
-                else
-                    res.send(400)
-            } catch(error) {
-                console.error(error)
-                res.send(400)
+        server.post("/urlencoded/roundTrip", async (request, reply) => {
+            if (request.headers["content-type"] === "application/x-www-form-urlencoded") {
+                // @ts-ignore
+                return qs.stringify(request.body)
             }
+
+            reply.code(400)
+            reply.send()
+            return reply
         })
 
-        server.post("/blob/roundTrip", (req, res) => {
-            try {
-                if(req.header("content-type") === "application/xxx-octet-stream") {
-                    res.header("content-type", "application/octet-stream")
-                    res.sendRaw(req.body)
-                } else {
-                    res.send(400)
+        server.post("/blob/roundTrip", async (request, reply) => {
+            if (request.headers["content-type"] === "application/xxx-octet-stream") {
+                reply.type("application/octet-stream")
+                reply.send(request.raw)
+
+                return reply
+            }
+
+            reply.code(400)
+            reply.send()
+            return reply
+        })
+
+        server.post("/formData/decode", async (request, reply) => {
+            if (!request.headers["content-type"].startsWith("multipart/form-data")) {
+                reply.code(400)
+                reply.send()
+                return reply
+            }
+
+            const promises = values(request.body).map(async (item) => {
+                if (Array.isArray(item)) {
+                    return [
+                        item[0].fieldname,
+                        item.flatMap(inner => inner.value)
+                    ]
                 }
-            } catch (error) {
-                console.error(error)
-                res.send(400)
+                if (!item.file) {
+                    return [item.fieldname, item.value]
+                }
+
+                const buffer = await item.toBuffer()
+                return [item.fieldname, {
+                    data: Array.from(buffer.values()),
+                    type: "Buffer"
+                }]
+            })
+
+            const pairs = await Promise.all(promises)
+
+            return Object.fromEntries(pairs)
+        })
+
+        server.get("/accept", async (request, reply) => {
+            const accept = request.headers["accept"]
+
+            if (accept === "application/json") {
+                return { json: "ok" }
             }
+
+            return "text"
         })
 
-        server.post("/formData/decode", (req, res) => {
-            if(req.header("content-type").startsWith("multipart/form-data"))
-                res.json(req.params)
-            else
-                res.send(400)
+
+        server.after(() => {
+            server.route({
+                method: "GET",
+                url: "/basicauth",
+                onRequest: server.basicAuth,
+                handler: async (request, reply) => {
+                    return "ok"
+                }
+            })
         })
 
-        server.get("/accept", (req, res) => {
-            const accept = req.header("Accept")
-            if(~accept.indexOf("application/json"))
-                res.json({ json: "ok" })
-            else
-                res.sendRaw("text")
+        server.get("/json500", async (request, reply) => {
+            reply.status(500)
+            return { error: 500, message: "ok" }
         })
 
-        server.get("/basicauth", (req, res) => {
-            if(req.authorization &&
-                req.authorization.scheme === "Basic" &&
-                req.authorization.basic.username === "wretch" &&
-                req.authorization.basic.password === "rocks")
-                res.sendRaw("ok")
-            else
-                res.send(401)
+        server.get("/longResult", async () => {
+            await delay(1000)
+            return "ok"
         })
 
-        server.get("/json500", (req, res) => {
-            res.json(500, { error: 500, message: "ok" })
+        server.get("/*", async (request, reply) => {
+            reply.status(404)
+
+            return {}
         })
 
-        server.get("/longResult", (req, res) => {
-            setTimeout(() => res.sendRaw("ok"), 1000)
-        })
-
-        server.get("/*", (req, res) => {
-            res.json(404, {})
-        })
-
-        server.listen(port)
+        server.listen({ port })
     },
     stop: () => {
-        mockServer["server"].close()
+        mockServer.server?.close()
     }
 }
 
-const textReply = (req, res) => {
-    res.sendRaw("A text string")
+/** @type {Fastify.RouteHandler} */
+const textReply = async () => {
+    return "A text string"
 }
-const jsonReply = (req, res) => {
-    res.json({ a: "json", "object": "which", "is": "stringified" })
+/** @type {Fastify.RouteHandler} */
+const jsonReply = async () => {
+    return { a: "json", "object": "which", "is": "stringified" }
 }
-const imgReply = (req, res) => {
-    res.setHeader("content-type", "image/jpeg")
-    res.send(preload.duck)
+/** @type {Fastify.RouteHandler} */
+const imgReply = async (request, reply) => {
+    reply.type("image/jpeg")
+
+    return preload.duck
 }
-const binaryReply = (req, res) => {
-    res.setHeader("content-type", "application/octet-stream")
-    const binaryData = Buffer.from([ 0x00, 0x01, 0x02, 0x03 ])
-    res.send(binaryData)
+/** @type {Fastify.RouteHandler} */
+const binaryReply = async (request, reply) => {
+    reply.type("application/octet-stream")
+    return Buffer.from([ 0x00, 0x01, 0x02, 0x03 ])
 }
 
+/**
+ * @param {Fastify.FastifyInstance} server
+ * @param {string} type
+ * @param {Fastify.RouteHandler} fun
+ */
 const setupReplies = (server, type, fun) => {
     server.get(   "/" + type, fun)
     server.post(  "/" + type, fun)
     server.put(   "/" + type, fun)
     server.patch( "/" + type, fun)
-    server.del(   "/" + type, fun)
+    server.delete("/" + type, fun)
 }
-
+/**
+ * @param {Fastify.FastifyInstance} server
+ */
 const setupErrors = server => {
     const errorList = [ 444, 449, 450, 451, 456, 495, 496, 497, 498, 499 ]
     for(let i = 0; i < 512; i++){
@@ -188,8 +247,9 @@ const setupErrors = server => {
     }
 
     for(let error of errorList) {
-        server.get("/" + error, (req, res) => {
-            res.sendRaw(error, "error code : " + error)
+        server.get("/" + error, async (request, reply) => {
+            reply.code(error)
+            return "error code : " + error
         })
     }
 }

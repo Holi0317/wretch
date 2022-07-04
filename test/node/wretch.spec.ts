@@ -8,7 +8,9 @@ import wretch from "../../src"
 import { mix } from "../../src/mix"
 
 import { performance, PerformanceObserver } from "perf_hooks"
-performance["clearResourceTimings"] = () => { }
+// clearResourceTimings is read-only since node 18. Use `defineProperty` to force override it
+// See https://github.com/facebook/jest/issues/2227#issuecomment-265005782
+Object.defineProperty(performance, 'clearResourceTimings', { value: () => {} })
 
 const _PORT = 9876
 const _URL = `http://localhost:${_PORT}`
@@ -228,10 +230,7 @@ describe("Wretch", function () {
         const f = { arr: [1, 2, 3] }
         const d = await wretch(`${_URL}/formData/decode`).formData(f).post().json()
         expect(d).toEqual({
-            // browser FormData output:
-            // "arr[]": [1, 2, 3]
-            // form-data package has an implementation which differs from the browser standard.
-            "arr[]": "3"
+            "arr[]": ["1", "2", "3"]
         })
     })
 
